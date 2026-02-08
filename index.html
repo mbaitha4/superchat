@@ -377,4 +377,215 @@
                 // Mobile Sidebar Logic
                 if (window.innerWidth < 768) {
                     const sidebar = document.getElementById('sidebar');
-                    if (!sidebar.classList.co
+                    if (!sidebar.classList.contains('-translate-x-full')) this.toggleSidebar();
+                }
+
+                setTimeout(() => this.scrollToBottom(), 100);
+            },
+
+            deleteChat(id) {
+                if(!confirm("Delete this chat?")) return;
+                
+                this.state.chats = this.state.chats.filter(c => c.id !== id);
+                this.saveChats();
+                
+                if (this.state.currentChatId === id) {
+                    this.startNewChat();
+                } else {
+                    this.renderChatList();
+                }
+            },
+
+            // --- Messaging & API ---
+
+            async sendMessage() {
+                if (this.state.isGenerating) return;
+
+                const input = document.getElementById('user-input');
+                const content = input.value.trim();
+                
+                if (!content) return;
+                
+                if (!this.state.apiKey) {
+                    alert("Please enter your OpenRouter API Key in settings.");
+                    this.toggleSettings();
+                    return;
+                }
+
+                // 1. Reset UI
+                input.value = '';
+                input.style.height = 'auto';
+                
+                document.getElementById('welcome-screen').classList.add('hidden');
+                document.getElementById('messages-list').classList.remove('hidden');
+
+                // 2. Add User Message to UI
+                this.appendMessage('user', content);
+
+                // 3. Manage Chat State
+                let activeChat = this.state.chats.find(c => c.id === this.state.currentChatId);
+                
+                if (!activeChat) {
+                    // Create new chat session
+                    const newId = Date.now().toString();
+                    activeChat = {
+                        id: newId,
+                        title: content.slice(0, 30) + (content.length > 30 ? '...' : ''),
+                        messages: []
+                    };
+                    this.state.chats.unshift(activeChat);
+                    this.state.currentChatId = newId;
+                    this.renderChatList();
+                }
+
+                // Add to history
+                activeChat.messages.push({ role: 'user', content: content });
+                this.saveChats();
+
+                // 4. API Call Setup
+                this.state.isGenerating = true;
+                const sendBtn = document.getElementById('send-btn');
+                sendBtn.disabled = true;
+                sendBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i>'; // Spinner
+
+                // Add Thinking Bubble
+                this.appendMessage('assistant', '', true);
+
+                try {
+                    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                        method: "POST",
+                        headers: {
+                            "Authorization": `Bearer ${this.state.apiKey}`,
+                            "Content-Type": "application/json",
+                            "HTTP-Referer": window.location.href, 
+                            "X-Title": "Universal AI Static Client"
+                        },
+                        body: JSON.stringify({
+                            "model": this.state.model,
+                            "messages": activeChat.messages
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const errData = await response.json();
+                        throw new Error(errData.error?.message || `API Error: ${response.status}`);
+                    }
+
+                    const data = await response.json();
+                    const aiContent = data.choices[0].message.content;
+
+                    // Remove Thinking Bubble
+                    const thinkingBubble = document.getElementById('thinking-bubble');
+                    if(thinkingBubble) thinkingBubble.remove();
+
+                    // Display AI Response
+                    this.appendMessage('assistant', aiContent);
+
+                    // Save AI Response to History
+                    activeChat.messages.push({ role: 'assistant', content: aiContent });
+                    this.saveChats();
+
+                } catch (error) {
+                    console.error(error);
+                    const thinkingBubble = document.getElementById('thinking-bubble');
+                    if(thinkingBubble) thinkingBubble.remove();
+                    this.appendMessage('assistant', `**Error:** ${error.message}\n\nPlease check your API key in settings.`);
+                } finally {
+                    this.state.isGenerating = false;
+                    sendBtn.disabled = false;
+                    sendBtn.innerHTML = '<i class="fa-solid fa-arrow-up"></i>';
+                    
+                    // Auto-focus input for rapid chatting
+                    setTimeout(() => input.focus(), 100);
+                }
+            },
+
+            appendMessage(role, content, isThinking = false) {
+                const msgList = document.getElementById('messages-list');
+                const div = document.createElement('div');
+                
+                const isUser = role === 'user';
+                
+                div.className = `flex gap-4 w-full ${isUser ? 'justify-end' : 'justify-start'}`;
+                
+                // Avatar Logic
+                const avatar = isUser 
+                    ? `<div class="w-8 h-8 rounded-full bg-gray-700 border border-gray-600 flex items-center justify-center flex-shrink-0 order-2 text-xs text-gray-300">YOU</div>`
+                    : `<div class="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-600 to-purple-600 flex items-center justify-center flex-shrink-0 order-1 shadow-lg shadow-blue-900/50"><i class="fa-solid fa-sparkles text-xs text-white"></i></div>`;
+
+                // Content Logic
+                let innerHTML = '';
+                if (isThinking) {
+                    innerHTML = `<div class="flex items-center gap-1.5 h-6 px-2"><div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div></div>`;
+                } else {
+                    // 1. Parse Markdown
+                    const rawHtml = marked.parse(content);
+                    // 2. Sanitize HTML (Security)
+                    innerHTML = DOMPurify.sanitize(rawHtml);
+                }
+
+                div.innerHTML = `
+                    ${avatar}
+                    <div class="max-w-[85%] md:max-w-[75%] ${isUser ? 'order-1' : 'order-2'}">
+                        <div class="${isUser 
+                            ? 'bg-gray-800 text-gray-100 rounded-2xl rounded-tr-sm px-5 py-3 shadow-md' 
+                            : 'prose prose-invert max-w-none'
+                        }">
+                            ${innerHTML}
+                        </div>
+                    </div>
+                `;
+                
+                if (isThinking) div.id = 'thinking-bubble';
+                
+                msgList.appendChild(div);
+                this.scrollToBottom();
+            },
+
+            // --- Persistence ---
+
+            saveChats() {
+                localStorage.setItem('uai_chats', JSON.stringify(this.state.chats));
+            },
+
+            saveSettings() {
+                const key = document.getElementById('api-key-input').value.trim();
+                const mod = document.getElementById('model-input').value.trim();
+                
+                if (!key) {
+                    alert("API Key cannot be empty.");
+                    return;
+                }
+
+                this.state.apiKey = key;
+                this.state.model = mod;
+                
+                localStorage.setItem('uai_api_key', this.state.apiKey);
+                localStorage.setItem('uai_model', this.state.model);
+                
+                this.updateModelDisplay();
+                this.toggleSettings();
+                
+                // If on welcome screen, focus input
+                if (!this.state.currentChatId) {
+                    document.getElementById('user-input').focus();
+                }
+            },
+
+            resetData() {
+                if (confirm("WARNING: This will delete your API Key and ALL chat history. This cannot be undone.")) {
+                    localStorage.removeItem('uai_chats');
+                    localStorage.removeItem('uai_api_key');
+                    localStorage.removeItem('uai_model');
+                    location.reload();
+                }
+            }
+        };
+
+        // Initialize App once DOM is fully ready
+        document.addEventListener('DOMContentLoaded', () => {
+            app.init();
+        });
+    </script>
+</body>
+</html>
